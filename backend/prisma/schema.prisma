@@ -1,0 +1,705 @@
+// Schema de Base de Datos - MVP Coordinador Técnico v3.0
+// Modelo mejorado basado en lógica de operación real (Excel)
+// Soporte multi-día, multi-técnico, facturación avanzada
+// Compatible con SQLite (desarrollo) y PostgreSQL (producción)
+
+// Configuración para múltiples bases de datos
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Configuración para PostgreSQL (producción)
+// Para desarrollo SQLite: cambiar provider a "sqlite" y url a "file:./dev.db"
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== NOTA PARA MIGRAR A PostgreSQL ====================
+// Para migrar a PostgreSQL:
+// 1. Cambiar provider de "sqlite" a "postgresql"
+// 2. Cambiar url a: url = env("DATABASE_URL") 
+// 3. Ejecutar: npx prisma db push
+// 4. Los índices abajo son compatibles con PostgreSQL
+// ==================== ENTIDADES PRINCIPALES ====================
+
+model Cliente {
+  id        Int       @id @default(autoincrement())
+  nombre    String
+  ruc       String?   @unique
+  telefono  String?
+  email     String?
+  direccion String?
+  tipo      String    @default("empresa")  // empresa o persona
+  estado    String    @default("activo")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  locales Local[]
+  ordenes Orden[]
+  representantes Representante[]
+  tareas Tarea[]
+}
+
+model Local {
+  id          Int      @id @default(autoincrement())
+  id_cliente  Int
+  nombre      String
+  direccion   String?
+  ciudad      String?
+  provincia   String?
+  tipo        String   @default("Local - PDVLL")  // Tipo de local: Islands - PDVILL, Local - PDVLL, Local CC - PDVLL CC, Local CC Exterior - PDVLL CCX, Matriz, Planta, Hospital, U.Educativa
+  tipo_servicio String? @default("no_aplica") // monitoreo_24_7, alarmas, no_aplica
+  fecha_implementacion DateTime?
+  estado      String   @default("activo")
+  fecha_baja  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cliente Cliente @relation(fields: [id_cliente], references: [id])
+  ordenes Orden[]
+  tareas Tarea[]
+
+  @@index([id_cliente])
+}
+
+model Tecnico {
+  id              Int       @id @default(autoincrement())
+  nombre          String
+  cedula          String?   @unique
+  telefono        String?
+  email           String?
+  especialidad    String?
+  jornada_horaria Int       @default(8)          // Horas diarias programadas
+  hora_entrada    String    @default("08:00")    // Hora de entrada
+  hora_salida     String    @default("17:00")    // Hora de salida
+  estado          String    @default("activo")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  asignaciones    Asignacion[]
+  registrosDiario RegistroDiario[]
+  horasTecnico    HoraTecnico[]
+  usuario         Usuario?
+  informes        InformeTecnico[]
+  tareas          Tarea[]
+  registroHoras   RegistroHoras[]
+  eventos         RegistroEvento[]
+  jornadas        Jornada[]
+  ausencias       Ausencia[]
+  jornadasGrupo   TecnicoJornada[]
+}
+
+// ==================== ORDEN (Entidad Principal) ====================
+// Estados: pendiente → asignada → en_proceso → completada → facturada
+//          ↓                                    ↓
+//        no_cumplida ────────────────────── reprogramada
+
+model Orden {
+  id               Int       @id @default(autoincrement())
+  numero_orden     String    @unique // Formato: ORD-2026-0001
+  id_cliente       Int
+  id_local         Int
+  tipo_trabajo     String    @default("visita_tecnica")
+  prioridad        String    @default("media")
+  descripcion      String?
+  
+  // Estado de la orden (workflow completo)
+  // Estados: pendiente, asignada, en_proceso, completada, facturada, no_cumplida, reprogramada
+  estado           String    @default("pendiente")
+  
+  // Resolución
+  fecha_resolucion DateTime?
+  resolucion       String?
+  
+  // Fechas
+  fecha_creacion   DateTime  @default(now())
+  fecha_programada DateTime?
+  hora_programada  String?                   // Hora programada para la orden
+  cantidad_tecnicos Int       @default(1)    // Cantidad de técnicos necesarios
+  horas_estimadas  Int       @default(1)    // Horas estimadas para el trabajo
+  fecha_inicio     DateTime?
+  fecha_fin        DateTime?
+  
+  // Control de Facturación (workflow: no_iniciada → planificada → en_proceso → finalizada → pagada)
+  facturable           Boolean  @default(false)
+  estado_facturacion   String   @default("no_iniciada")
+  fecha_envio_facturacion DateTime?
+  numero_factura       String?
+ 
+ // Archivos adjuntos (JSON array de URLs)
+  archivos_adjuntos  String?
+  
+  // Informe técnico (workflow: pendiente → enviado → aprobado → rechazado)
+  // IMPORTANTE: Validar informe antes de facturar
+  informe_adjunto  Boolean  @default(false)
+  estado_informe   String   @default("pendiente")
+  
+  // Auditoría
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  cliente       Cliente          @relation(fields: [id_cliente], references: [id])
+  local         Local            @relation(fields: [id_local], references: [id])
+  asignaciones  Asignacion[]
+  registrosDiario RegistroDiario[]
+  horasTecnico  HoraTecnico[]
+  historial     HistorialOrden[]
+  factura       Factura?
+  informes      InformeTecnico[]
+  segmentos     SegmentoTrabajo[]
+
+  @@index([estado])
+  @@index([fecha_programada])
+  @@index([id_cliente])
+  @@index([id_local])
+  @@index([estado_facturacion])
+  @@index([prioridad])
+  @@index([fecha_creacion])
+}
+
+// ==================== ASIGNACIÓN (Planificación) ====================
+
+model Asignacion {
+  id                       Int       @id @default(autoincrement())
+  id_orden                 Int
+  id_tecnico               Int
+  fecha_asignacion         DateTime  // Día específico de asignación
+  
+  hora_inicio_programada   String?
+  hora_fin_programada      String?
+  
+  estado                   String    @default("pendiente") // pendiente, completado, no_cumplido, reprogramado
+  motivo_reprogramacion    String?
+  
+  fecha_asignacion_real    DateTime?
+  
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  orden    Orden    @relation(fields: [id_orden], references: [id])
+  tecnico  Tecnico  @relation(fields: [id_tecnico], references: [id])
+
+  registrosDiario RegistroDiario[]
+  informes        InformeTecnico[]
+
+  @@index([id_orden])
+  @@index([id_tecnico])
+  @@index([fecha_asignacion])
+}
+
+// ==================== REGISTRO DIARIO (Seguimiento por Día) ====================
+
+model RegistroDiario {
+  id            Int       @id @default(autoincrement())
+  id_asignacion Int?
+  id_orden      Int?      // Nullable para permitir días libres sin orden
+  id_tecnico    Int
+  fecha         DateTime  // Día específico
+  
+  // Estado del día
+  estado_dia    String    @default("pendiente") // pendiente, en_proceso, completado, no_cumplido, reprogramado, dia_libre, certificacion
+  
+  // Tiempos reales
+  hora_llegada      String?
+  hora_salida       String?
+  hora_inicio_trabajo  String?
+  hora_fin_trabajo   String?
+  
+  // Pausas para comidas
+  hora_desayuno_inicio String?
+  hora_desayuno_fin    String?
+  hora_almuerzo_inicio String?
+  hora_almuerzo_fin    String?
+  hora_cena_inicio     String?
+  hora_cena_fin        String?
+  
+  // Cálculos automáticos
+  horas_normales   Float     @default(0)
+  horas_extras     Float     @default(0)
+  horas_almuerzo   Float     @default(0)
+  horas_desayuno   Float     @default(0)
+  horas_cena      Float     @default(0)
+  
+  // Días especiales
+  es_dia_libre         Boolean  @default(false)
+  es_fin_semana        Boolean  @default(false)
+  
+  // Certificación médica
+  tiene_certificacion  Boolean  @default(false)
+  motivo_certificacion String?
+  certificacion_adjunta Boolean @default(false)
+  
+  // Detalles
+  observaciones    String?
+  evidencia_url    String?
+  
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  asignacion Asignacion? @relation(fields: [id_asignacion], references: [id])
+  orden      Orden?       @relation(fields: [id_orden], references: [id])
+  tecnico    Tecnico     @relation(fields: [id_tecnico], references: [id])
+
+  @@index([fecha])
+  @@index([id_tecnico])
+  @@index([id_orden])
+  @@index([id_asignacion])
+  @@index([estado_dia])
+  @@index([es_dia_libre])
+  @@index([es_fin_semana])
+}
+
+// ==================== HORA TÉCNICO (Resumen) ====================
+
+model HoraTecnico {
+  id               Int      @id @default(autoincrement())
+  id_tecnico       Int
+  id_orden         Int?
+  fecha            DateTime
+  hora_inicio      String
+  hora_fin         String?
+  horas_trabajadas Float
+  tipo             String   @default("normal") // normal, extra
+  es_fin_semana    Boolean  @default(false)
+  observaciones    String?
+  createdAt        DateTime @default(now())
+
+  orden   Orden?   @relation(fields: [id_orden], references: [id])
+  tecnico Tecnico  @relation(fields: [id_tecnico], references: [id])
+
+  @@index([fecha])
+  @@index([id_tecnico])
+}
+
+// ==================== HISTORIAL DE ORDEN ====================
+
+model HistorialOrden {
+  id              Int      @id @default(autoincrement())
+  id_orden        Int
+  accion          String
+  estado_anterior String?
+  estado_nuevo    String?
+  motivo          String?
+  fecha_cambio    DateTime @default(now())
+  usuario         String?
+
+  orden Orden @relation(fields: [id_orden], references: [id])
+
+  @@index([id_orden])
+}
+
+// ==================== FACTURA (Control de Facturación) ====================
+// Estados: no_iniciada → validacion_cliente → aprobada_cliente → finalizada → pagada
+
+model Factura {
+  id                    Int       @id @default(autoincrement())
+  id_orden              Int       @unique // Una factura por orden
+  numero_factura        String?   @unique
+  
+  // Orden de compra del cliente
+  orden_compra_cliente  String?   // N° OC del cliente
+  tiene_oc              Boolean   @default(false) // Indica si tiene orden de compra
+  
+  // Fechas del proyecto (calculadas desde asignaciones)
+  fecha_inicio_proyecto DateTime? // Fecha mínima de asignaciones
+  fecha_fin_proyecto    DateTime? // Fecha máxima de asignaciones
+  
+  // Estado del reporte técnico
+  reporte_aprobado      Boolean   @default(false) // Si el informe está aprobado
+  
+  // Workflow de facturación
+  // Estados: no_iniciada, validacion_cliente, aprobada_cliente, finalizada, pagada
+  estado                String    @default("no_iniciada")
+  
+  // Fechas
+  fecha_emision          DateTime?
+  fecha_vencimiento     DateTime?
+  fecha_pago             DateTime?
+  
+  // Montos
+  monto                 Float?
+  monto_pagado          Float?
+  
+  // Detalles
+  observaciones         String? 
+  archivo_cotizacion   String?   // Cotización subida al crear factura
+  archivo_aprobacion   String?   // Comprobante de aprobación del cliente
+ 
+ // Archivos adjuntos (JSON array de URLs)
+  archivos_adjuntos    String?
+  
+  // Auditoría
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  orden                  Orden     @relation(fields: [id_orden], references: [id])
+
+  // Historial de cambios de estado
+  historialCambios      HistorialFactura[]
+
+  @@index([estado])
+  @@index([id_orden])
+  @@index([fecha_emision])
+  @@index([fecha_vencimiento])
+  @@index([fecha_pago])
+}
+
+// ==================== HISTORIAL DE FACTURA ====================
+
+model HistorialFactura {
+  id                Int       @id @default(autoincrement())
+  id_factura        Int
+  estado_anterior   String?
+  estado_nuevo      String
+  observaciones     String?
+  usuario           String?   // quién hizo el cambio
+  createdAt         DateTime  @default(now())
+
+  factura           Factura   @relation(fields: [id_factura], references: [id], onDelete: Cascade)
+
+  @@index([id_factura])
+  @@index([createdAt])
+}
+
+// ==================== INFORME TÉCNICO ====================
+
+model InformeTecnico {
+  id                    Int       @id @default(autoincrement())
+  id_orden              Int
+  id_tecnico            Int
+  id_asignacion         Int?
+  
+  // Contenido del informe
+  descripcion_trabajo   String?
+  materiales_usados    String?
+  estado_equipo         String?   // nuevo, usado, reparado, fuera_servicio
+  recomendaciones       String?
+  proximo_mantenimiento DateTime?
+  
+  // Evidencias
+  firma_cliente         String?   // firma en base64 o URL
+  nombre_cliente        String?   // nombre de quien firma
+  cedula_cliente        String?   // cédula de quien firma
+  fotos                 String?   // JSON array de URLs
+  
+  // Control
+  estado                String    @default("pendiente") // pendiente, enviado, aprobado, rechazado
+  fecha_informe         DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  orden      Orden      @relation(fields: [id_orden], references: [id])
+  tecnico    Tecnico    @relation(fields: [id_tecnico], references: [id])
+  asignacion Asignacion? @relation(fields: [id_asignacion], references: [id])
+
+  @@index([id_orden])
+  @@index([id_tecnico])
+  @@index([estado])
+}
+
+// ==================== REPRESENTANTE ====================
+
+model Representante {
+  id           Int       @id @default(autoincrement())
+  id_cliente   Int
+  nombre       String
+  telefono     String?
+  email        String?
+  cargo        String?
+  principal    Boolean   @default(false)  // Si es el representante principal
+  estado       String    @default("activo")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  cliente Cliente @relation(fields: [id_cliente], references: [id])
+
+  @@index([id_cliente])
+}
+
+// ==================== USUARIO ====================
+
+model Usuario {
+  id         Int      @id @default(autoincrement())
+  username   String   @unique
+  password   String
+  rol        String   @default("tecnico") // admin, coordinador, tecnico
+  id_tecnico Int?     @unique
+  estado     String   @default("activo")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tecnico Tecnico? @relation(fields: [id_tecnico], references: [id])
+}
+
+// ==================== TAREA (Entidad legacy para compatibilidad) ====================
+
+model Tarea {
+  id               Int       @id @default(autoincrement())
+  id_cliente       Int
+  id_local         Int
+  id_tecnico       Int?
+  tipo_trabajo     String    @default("visita_tecnica")
+  prioridad        String    @default("media")
+  estado           String    @default("pendiente")
+  descripcion      String?
+  fecha_creacion   DateTime  @default(now())
+  fecha_programada DateTime?
+  hora_programada  String?
+  fecha_inicio     DateTime?
+  fecha_fin        DateTime?
+  facturable       Boolean   @default(false)
+  informe_adjunto  Boolean   @default(false)
+  estado_informe   String    @default("pendiente")
+  observaciones    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  cliente  Cliente       @relation(fields: [id_cliente], references: [id])
+  local    Local         @relation(fields: [id_local], references: [id])
+  tecnico  Tecnico?      @relation(fields: [id_tecnico], references: [id])
+  historial HistorialTarea[]
+  registroHoras RegistroHoras[]
+
+  @@index([estado])
+  @@index([fecha_programada])
+  @@index([id_tecnico])
+  @@index([id_cliente])
+}
+
+// ==================== HISTORIAL TAREA ====================
+
+model HistorialTarea {
+  id              Int      @id @default(autoincrement())
+  id_tarea        Int
+  accion          String
+  estado_anterior String?
+  estado_nuevo    String?
+  motivo          String?
+  fecha_cambio    DateTime @default(now())
+  usuario         String?
+
+  tarea Tarea @relation(fields: [id_tarea], references: [id])
+
+  @@index([id_tarea])
+}
+
+// ==================== REGISTRO HORAS (para Tareas) ====================
+
+// ==================== REGISTRO DE ACTIVIDADES (Bitácora) ====================
+
+model RegistroEvento {
+  id                     Int       @id @default(autoincrement())
+  id_tecnico             Int
+  fecha_hora             DateTime  @default(now())
+  tipo_evento            String    // inicio_jornada, salida_oficina, ingreso_terminal, etc.
+  descripcion            String?
+  foto_url               String?
+  jornada_id             Int?
+  estado                 String    @default("pendiente")  // pendiente, aprobado, observacion
+  observaciones_coordinador String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  tecnico                Tecnico   @relation(fields: [id_tecnico], references: [id])
+  jornada                Jornada?  @relation(fields: [jornada_id], references: [id])
+
+  @@index([id_tecnico])
+  @@index([fecha_hora])
+  @@index([jornada_id])
+  @@index([estado])
+}
+
+model Jornada {
+  id                     Int       @id @default(autoincrement())
+  id_tecnico             Int
+  fecha                  DateTime  // Fecha de la jornada (sin hora)
+  hora_inicio            DateTime  // Primer evento
+  hora_fin               DateTime  // Último evento
+  jornada_continua_id    String?   // UUID para vincular jornadas que cruzan medianoche
+  estado                 String    @default("pendiente")  // pendiente, abierta, cerrada, observacion
+  total_horas            Float     @default(0)
+  horas_trabajo          Float     @default(0)
+  horas_extras           Float     @default(0)
+  total_pausas           Float     @default(0)
+  observaciones          String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  tecnico                Tecnico   @relation(fields: [id_tecnico], references: [id])
+  eventos                RegistroEvento[]
+
+  @@index([id_tecnico])
+  @@index([fecha])
+  @@index([estado])
+}
+
+// ==================== REGISTRO JORNADA (Nueva estructura para registro grupal) ====================
+
+model RegistroJornada {
+  id              Int       @id @default(autoincrement())
+  fecha           DateTime
+  hora_entrada    String
+  hora_salida     String
+  observaciones   String?
+  estado          String    @default("completado")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tecnicos        TecnicoJornada[]
+  segmentos       SegmentoTrabajo[]
+  comidas         ComidaJornada[]
+
+  @@index([fecha])
+}
+
+model TecnicoJornada {
+  id              Int             @id @default(autoincrement())
+  id_registro    Int
+  id_tecnico      Int
+  hora_llegada    String?
+  hora_salida     String?
+  observaciones   String?
+  
+  registro        RegistroJornada @relation(fields: [id_registro], references: [id], onDelete: Cascade)
+  tecnico         Tecnico         @relation(fields: [id_tecnico], references: [id])
+
+  @@index([id_registro])
+  @@index([id_tecnico])
+}
+
+model SegmentoTrabajo {
+  id              Int             @id @default(autoincrement())
+  id_registro    Int
+  id_orden        Int?
+  descripcion     String?
+  hora_inicio     String
+  hora_fin        String
+  tipo            String          @default("normal") // normal, extra
+  createdAt       DateTime        @default(now())
+  
+  registro        RegistroJornada @relation(fields: [id_registro], references: [id], onDelete: Cascade)
+  orden           Orden?          @relation(fields: [id_orden], references: [id])
+
+  @@index([id_registro])
+  @@index([id_orden])
+}
+
+model ComidaJornada {
+  id              Int             @id @default(autoincrement())
+  id_registro    Int
+  tipo            String          // desayuno, almuerzo, cena
+  hora_inicio     String
+  hora_fin        String
+  
+  registro        RegistroJornada @relation(fields: [id_registro], references: [id], onDelete: Cascade)
+
+  @@index([id_registro])
+}
+
+model Ausencia {
+  id                     Int       @id @default(autoincrement())
+  id_tecnico             Int
+  tipo                   String    // dia_libre, permiso_medico, vacacion, feriado, compensatorio
+  fecha_inicio           DateTime
+  fecha_fin              DateTime
+  descripcion            String?
+  foto_url               String?
+  estado                 String    @default("pendiente")  // pendiente, aprobado, rechazado
+  observaciones          String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  tecnico                Tecnico   @relation(fields: [id_tecnico], references: [id])
+
+  @@index([id_tecnico])
+  @@index([fecha_inicio])
+  @@index([estado])
+}
+
+model RegistroHoras {
+  id               Int      @id @default(autoincrement())
+  id_tarea         Int
+  id_tecnico       Int
+  fecha            DateTime
+  hora_inicio      String
+  hora_fin         String?
+  horas_trabajadas Float
+  es_viaje         Boolean  @default(false)
+  es_fin_semana    Boolean  @default(false)
+  es_hora_extra    Boolean  @default(false)
+  observaciones    String?
+  createdAt        DateTime @default(now())
+
+  tarea   Tarea   @relation(fields: [id_tarea], references: [id])
+  tecnico Tecnico @relation(fields: [id_tecnico], references: [id])
+
+  @@index([fecha])
+  @@index([id_tecnico])
+  @@index([id_tarea])
+}
+
+// ==================== INVENTARIO UNIFICADO ====================
+// Sistema centralizado de inventario técnico
+// Cada fila representa un componente de un local
+// Relación por: id_externo + tipo_local + nombre_local
+
+model Inventario {
+  id              Int       @id @default(autoincrement())
+  
+  // Identificación del local
+  id_externo      String    @default("")
+  tipo_local      String    @default("")  // PDVLL, PDVIL
+  nombre_local    String    @default("")
+  cliente         String    @default("LOTERIA NACIONAL")  // Por defecto
+  
+  // Ubicación
+  provincia       String?
+  ciudad          String?
+  
+  // Estado y monitoreo
+  tipo_monitoreo  String?   // VISUAL 24/7, BAJO ALERTAS, CERRADO
+  estado_operativo String?  // OPERATIVO, CERRADO
+  fecha_implementacion DateTime?
+  fecha_cierre     DateTime?
+  observacion     String?
+  
+  // Información del local
+  direccion       String?
+  gps             String?
+  horario_apertura String?
+  horario_cierre  String?
+  ip_1            String?
+  ip_2            String?
+  ip_3            String?
+  contacto        String?
+  correo          String?
+  
+  // Inventario técnico
+  tipo_sistema    String?   // CCTV, ALARMA, HUMO, ACCESO
+  categoria       String?   // camara, nvr, sensor, cerradura, panel, etc
+  cantidad        Int       @default(0)
+  marca           String?   // DT360, LOTERIA, etc
+  
+  // Campo flexible JSONB
+  detalle         Json?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Índices para búsquedas frecuentes
+  @@index([id_externo])
+  @@index([tipo_local])
+  @@index([nombre_local])
+  @@index([cliente])
+  @@index([provincia])
+  @@index([ciudad])
+  @@index([tipo_sistema])
+  @@index([categoria])
+  @@index([estado_operativo])
+  
+  // Restricción de unicidad: mismo componente no puede duplicarse
+  @@unique([id_externo, tipo_sistema, categoria])
+}

@@ -1,0 +1,808 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import { Download, Eye, CheckCircle, XCircle, Send, Edit } from 'lucide-react';
+import { getInformes, getOrdenes, getTecnicos, actualizarEstadoInforme, updateInforme } from '../services/api';
+import { InformeTecnico, Orden, Tecnico, FotoItem, Pagination } from '../types';
+import { generarInformeWord } from '../utils/generarWord';
+import { useAuth } from '../context/AuthContext';
+
+const Informes: React.FC = () => {
+  const { usuario, hasRole } = useAuth();
+  const [informes, setInformes] = useState<InformeTecnico[]>([]);
+  const [ordenes, setOrdenes] = useState<Orden[]>([]);
+  const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showDetalleModal, setShowDetalleModal] = useState(false);
+  const [showEditarModal, setShowEditarModal] = useState(false);
+  const [informeSeleccionado, setInformeSeleccionado] = useState<InformeTecnico | null>(null);
+  const [editandoInforme, setEditandoInforme] = useState<InformeTecnico | null>(null);
+  const [editandoFotos, setEditandoFotos] = useState<FotoItem[]>([]);
+  const [filtro, setFiltro] = useState({
+    id_orden: '',
+    id_tecnico: '',
+    estado: '',
+    busqueda: ''  // Nuevo campo para búsqueda por texto libre
+  });
+  
+  // Paginación
+  const [pagination, setPagination] = useState<Pagination>({ total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [limitSelect, setLimitSelect] = useState(50);
+  
+  // Caché para órdenes y técnicos (solo se cargan una vez)
+  const [datosCargados, setDatosCargados] = useState(false);
+  
+  // Para técnicos: mostrar solo sus propios informes
+  const esTecnico = hasRole(['tecnico']);
+  const tecnicoId = usuario?.tecnico?.id;
+
+  // Cargar órdenes y técnicos solo una vez
+  useEffect(() => {
+    const cargarDatosFijos = async () => {
+      if (datosCargados) return;
+      try {
+        const [ordenesRes, tecnicosRes] = await Promise.all([
+          getOrdenes(),
+          getTecnicos()
+        ]);
+        // El interceptor extrae { success: true, data: [...] } -> [...]
+        // Verificar que sea array
+        const ordenesData = Array.isArray(ordenesRes) ? ordenesRes : [];
+        const tecnicosData = Array.isArray(tecnicosRes) ? tecnicosRes : [];
+        console.log('cargarDatosFijos - ordenes:', ordenesData.length, 'tecnicos:', tecnicosData.length);
+        setOrdenes(ordenesData);
+        setTecnicos(tecnicosData);
+        setDatosCargados(true);
+      } catch (error) {
+        console.error('Error cargando datos base:', error);
+      }
+    };
+    cargarDatosFijos();
+  }, [datosCargados]);
+
+  // Cargar informes con paginación
+  const loadInformes = useCallback(async (page = 1, limit = limitSelect) => {
+    try {
+      const filtros: any = {
+        ...(filtro.id_orden && { id_orden: parseInt(filtro.id_orden) }),
+        ...(filtro.id_tecnico && { id_tecnico: parseInt(filtro.id_tecnico) }),
+        ...(filtro.estado && { estado: filtro.estado }),
+        ...(filtro.busqueda && { busqueda: filtro.busqueda }),
+        page,
+        limit
+      };
+      
+      // Si es técnico, filtrar por su ID
+      if (esTecnico && tecnicoId) {
+        filtros.id_tecnico = tecnicoId;
+      }
+      
+      console.log('loadInformes -> filtros:', filtros);
+      const response: any = await getInformes(filtros);
+      console.log('loadInformes -> response:', response);
+      
+      // La respuesta de Axios tiene la estructura: { data: { success, data, pagination }, status, ... }
+      // Los datos reales están en response.data
+      let informesArray: any[] = [];
+      let paginationData = { total: 0, page: 1, limit: limit, totalPages: 0 };
+      
+      // Extraer datos de la respuesta de Axios
+      const responseData = response?.data;
+      
+      if (responseData && responseData.data && Array.isArray(responseData.data)) {
+        informesArray = responseData.data;
+        const total = responseData.pagination?.total || informesArray.length;
+        const totalPages = Math.ceil(total / limit);
+        paginationData = { total, page, limit, totalPages };
+      } else if (Array.isArray(responseData)) {
+        informesArray = responseData;
+        paginationData = { total: responseData.length, page: 1, limit, totalPages: 1 };
+      } else {
+        console.warn('loadInformes: respuesta inesperada', responseData);
+        informesArray = [];
+      }
+      
+      console.log('loadInformes -> informesArray:', informesArray.length, 'pagination:', paginationData);
+      setInformes(informesArray);
+      setPagination(paginationData);
+    } catch (error) {
+      console.error('Error cargando informes:', error);
+    } finally {
+      setLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtro, esTecnico, tecnicoId, limitSelect]);
+
+  // Cargar informes al inicio y cuando cambian filtros
+  useEffect(() => {
+    setLoading(true);
+    loadInformes(1, limitSelect);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtro.id_orden, filtro.id_tecnico, filtro.estado, filtro.busqueda, limitSelect]);
+
+  // Cambiar página
+  const goToPage = (page: number) => {
+    if (page < 1 || page > pagination.totalPages) return;
+    setLoading(true);
+    loadInformes(page, limitSelect);
+  };
+
+  // Cambiar límite
+  const handleLimitChange = (newLimit: number) => {
+    setLimitSelect(newLimit);
+    setLoading(true);
+    loadInformes(1, newLimit);
+  };
+
+  const verDetalle = (informe: InformeTecnico) => {
+    setInformeSeleccionado(informe);
+    setShowDetalleModal(true);
+  };
+
+  const descargarWord = async (informe: InformeTecnico) => {
+    try {
+      await generarInformeWord(informe);
+    } catch (error) {
+      console.error('Error generando Word:', error);
+      alert('Error al generar el documento Word');
+    }
+  };
+
+  const getEstadoColor = (estado: string) => {
+    switch (estado) {
+      case 'pendiente': return 'bg-yellow-100 text-yellow-700';
+      case 'enviado': return 'bg-blue-100 text-blue-700';
+      case 'aprobado': return 'bg-green-100 text-green-700';
+      case 'rechazado': return 'bg-red-100 text-red-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
+
+  // Cambiar estado del informe (solo coordinadores/admins)
+  const cambiarEstado = async (id: number, nuevoEstado: string) => {
+    try {
+      await actualizarEstadoInforme(id, nuevoEstado);
+      loadInformes(); // Recargar la lista
+      setShowDetalleModal(false);
+      setInformeSeleccionado(null);
+    } catch (error) {
+      console.error('Error cambiando estado:', error);
+      alert('Error al cambiar el estado del informe');
+    }
+  };
+
+  // Iniciar edición del informe
+  const handleEditar = (informe: InformeTecnico) => {
+    setEditandoInforme(informe);
+    // Parsear fotos para edición
+    const fotos = parseBloques(informe.fotos);
+    setEditandoFotos(fotos.map(f => ({ foto: f.foto, descripcion: f.descripcion || '' })));
+    setShowEditarModal(true);
+  };
+
+  // Guardar cambios del informe
+  const handleGuardarEdicion = async () => {
+    if (!editandoInforme) return;
+    try {
+      // Guardar fotos actualizadas
+      const fotosJson = JSON.stringify(editandoFotos);
+      
+      await updateInforme(editandoInforme.id, {
+        descripcion_trabajo: editandoInforme.descripcion_trabajo || undefined,
+        materiales_usados: editandoInforme.materiales_usados || undefined,
+        estado_equipo: editandoInforme.estado_equipo || undefined,
+        recomendaciones: editandoInforme.recomendaciones || undefined,
+        proximo_mantenimiento: editandoInforme.proximo_mantenimiento || undefined,
+        fotos: fotosJson
+      });
+      // Después de editar, cambiar estado a pendiente para permitir reenvío
+      await actualizarEstadoInforme(editandoInforme.id, 'pendiente');
+      setShowEditarModal(false);
+      setEditandoInforme(null);
+      setEditandoFotos([]);
+      loadInformes();
+      setShowDetalleModal(false);
+      setInformeSeleccionado(null);
+    } catch (error) {
+      console.error('Error guardando informe:', error);
+      alert('Error al guardar los cambios del informe');
+    }
+  };
+
+  // Parsear bloques de fotos si existen
+  const parseBloques = (fotosJson: any) => {
+    console.log('parseBloques recibe:', typeof fotosJson, fotosJson?.substring?.(0, 50));
+    if (!fotosJson) return [];
+    try {
+      // Si ya es array, retornarlo directamente
+      if (Array.isArray(fotosJson)) {
+        console.log('Es array, retorna directo');
+        return fotosJson;
+      }
+      // Si es string, parsearlo
+      if (typeof fotosJson === 'string') {
+        console.log('Es string, haciendo JSON.parse...');
+        let parsed = JSON.parse(fotosJson);
+        console.log('Parseado resultado:', typeof parsed, Array.isArray(parsed));
+        // Si el resultado es un string (double-encoded), parsear de nuevo
+        if (typeof parsed === 'string') {
+          console.log('Double-encoded, parseando de nuevo...');
+          parsed = JSON.parse(parsed);
+        }
+        if (Array.isArray(parsed)) return parsed;
+        // Si es objeto con clave '0', puede ser un objeto con índices
+        if (typeof parsed === 'object') {
+          const arr = Object.values(parsed).filter(item => 
+            item && typeof item === 'object' && 'foto' in item
+          );
+          return arr;
+        }
+        return [];
+      }
+      // Si es objeto, convertir a array si tiene estructura válida
+      if (typeof fotosJson === 'object') {
+        const arr = Object.values(fotosJson).filter(item => 
+          item && typeof item === 'object' && 'foto' in item
+        );
+        return arr;
+      }
+      return [];
+    } catch (e) {
+      console.error('Error parseando fotos:', e);
+      return [];
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Informes Técnicos</h1>
+      </div>
+
+      {/* Filtros */}
+      <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="flex flex-wrap gap-4 items-end">
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Orden</label>
+            <select
+              value={filtro.id_orden}
+              onChange={(e) => setFiltro({ ...filtro, id_orden: e.target.value })}
+              className="w-full border rounded-lg px-3 py-2"
+            >
+              <option value="">Todas las órdenes</option>
+              {ordenes.map(o => (
+                <option key={o.id} value={o.id}>{o.numero_orden}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Técnico</label>
+            <select
+              value={filtro.id_tecnico}
+              onChange={(e) => setFiltro({ ...filtro, id_tecnico: e.target.value })}
+              className="w-full border rounded-lg px-3 py-2"
+            >
+              <option value="">Todos los técnicos</option>
+              {tecnicos.map(t => (
+                <option key={t.id} value={t.id}>{t.nombre}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
+            <select
+              value={filtro.estado}
+              onChange={(e) => setFiltro({ ...filtro, estado: e.target.value })}
+              className="w-full border rounded-lg px-3 py-2"
+            >
+              <option value="">Todos los estados</option>
+              <option value="pendiente">Pendiente</option>
+              <option value="enviado">Enviado</option>
+              <option value="aprobado">Aprobado</option>
+              <option value="rechazado">Rechazado</option>
+            </select>
+          </div>
+          <div className=\"flex-1 min-w-[200px]\">
+            <label className=\"block text-sm font-medium text-gray-700 mb-1\">Búsqueda</label>
+            <input
+              type=\"text\"
+              placeholder=\"Buscar por número de orden, cliente o técnico...\"
+              value={filtro.busqueda}
+              onChange={(e) => setFiltro({ ...filtro, busqueda: e.target.value })}
+              className=\"w-full border rounded-lg px-3 py-2\"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de Informes */}
+      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+        <table className="w-full min-w-[800px]">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">ID</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Orden</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Local</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Técnico</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Fecha</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Estado</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">Acciones</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {(informes || []).length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+                  No hay informes técnicos registrados
+                </td>
+              </tr>
+            ) : (
+              informes.map(informe => (
+                <tr key={informe.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-sm">#{informe.id}</td>
+                  <td className="px-4 py-3 text-sm">{informe.orden?.numero_orden || 'N/A'}</td>
+                  <td className="px-4 py-3 text-sm">{informe.orden?.local?.nombre || 'N/A'}</td>
+                  <td className="px-4 py-3 text-sm">{informe.tecnico?.nombre || 'N/A'}</td>
+                  <td className="px-4 py-3 text-sm">
+                    {informe.fecha_informe ? new Date(informe.fecha_informe).toLocaleDateString() : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    <span className={`px-2 py-1 rounded-full text-xs ${getEstadoColor(informe.estado)}`}>
+                      {informe.estado}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => verDetalle(informe)}
+                        className="p-1 hover:bg-gray-100 rounded text-blue-600"
+                        title="Ver detalle"
+                      >
+                        <Eye size={18} />
+                      </button>
+                      <button
+                        onClick={() => descargarWord(informe)}
+                        className="p-1 hover:bg-gray-100 rounded text-green-600"
+                        title="Descargar Word"
+                      >
+                        <Download size={18} />
+                      </button>
+                      {(informe.estado === 'pendiente' || informe.estado === 'rechazado') && (
+                        <button
+                          onClick={() => handleEditar(informe)}
+                          className="p-1 hover:bg-gray-100 rounded text-orange-600"
+                          title="Editar"
+                        >
+                          <Edit size={18} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Paginación */}
+      <div className="flex flex-col sm:flex-row justify-between items-center gap-4 px-4 py-3 bg-gray-50 border-t">
+        {/* Selector de cantidad */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-600">Mostrar:</span>
+          <select
+            value={limitSelect}
+            onChange={(e) => handleLimitChange(parseInt(e.target.value))}
+            className="border rounded-lg px-2 py-1 text-sm"
+          >
+            <option value={20}>20</option>
+            <option value={50}>50</option>
+            <option value={80}>80</option>
+          </select>
+        </div>
+        
+        {/* Info de paginación */}
+        <div className="text-sm text-gray-600">
+          Página {pagination.page} de {pagination.totalPages || 1} ({pagination.total} informes)
+        </div>
+        
+        {/* Botones de navegación */}
+        <div className="flex items-center gap-2">
+          {/* Ir a página específica */}
+          <input
+            type="number"
+            min={1}
+            max={pagination.totalPages || 1}
+            value={pagination.page}
+            onChange={(e) => {
+              const page = parseInt(e.target.value);
+              if (page >= 1 && page <= (pagination.totalPages || 1)) {
+                goToPage(page);
+              }
+            }}
+            className="w-16 border rounded-lg px-2 py-1 text-sm text-center"
+          />
+          <button
+            onClick={() => goToPage(1)}
+            disabled={pagination.page <= 1}
+            className="px-3 py-1 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            ««
+          </button>
+          <button
+            onClick={() => goToPage(pagination.page - 1)}
+            disabled={pagination.page <= 1}
+            className="px-3 py-1 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            «
+          </button>
+          <button
+            onClick={() => goToPage(pagination.page + 1)}
+            disabled={pagination.page >= pagination.totalPages}
+            className="px-3 py-1 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            »
+          </button>
+          <button
+            onClick={() => goToPage(pagination.totalPages)}
+            disabled={pagination.page >= pagination.totalPages}
+            className="px-3 py-1 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            »»
+          </button>
+        </div>
+      </div>
+
+      {/* Modal Detalle Informe */}
+      {showDetalleModal && informeSeleccionado && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold mb-4">Detalle del Informe Técnico</h2>
+            
+            {/* Info básica */}
+            <div className="bg-gray-50 rounded-lg p-4 mb-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-500">Orden:</span>
+                  <span className="ml-2 font-medium">{informeSeleccionado.orden?.numero_orden}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Cliente:</span>
+                  <span className="ml-2 font-medium">{informeSeleccionado.orden?.cliente?.nombre}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Local:</span>
+                  <span className="ml-2 font-medium">{informeSeleccionado.orden?.local?.nombre || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Técnico:</span>
+                  <span className="ml-2 font-medium">{informeSeleccionado.tecnico?.nombre}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Fecha:</span>
+                  <span className="ml-2 font-medium">
+                    {informeSeleccionado.fecha_informe ? new Date(informeSeleccionado.fecha_informe).toLocaleDateString() : '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Estado:</span>
+                  <span className={`ml-2 px-2 py-0.5 rounded text-xs ${getEstadoColor(informeSeleccionado.estado)}`}>
+                    {informeSeleccionado.estado}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Descripción del trabajo */}
+            <div className="mb-4">
+              <h3 className="font-semibold text-gray-700 mb-2">Descripción del Trabajo</h3>
+              <p className="text-gray-600 bg-gray-50 p-3 rounded">{informeSeleccionado.descripcion_trabajo || 'Sin descripción'}</p>
+            </div>
+
+            {/* Materiales usados */}
+            {informeSeleccionado.materiales_usados && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Materiales Usados</h3>
+                <p className="text-gray-600 bg-gray-50 p-3 rounded">{informeSeleccionado.materiales_usados}</p>
+              </div>
+            )}
+
+            {/* Estado del equipo */}
+            {informeSeleccionado.estado_equipo && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Estado del Equipo</h3>
+                <p className="text-gray-600 bg-gray-50 p-3 rounded capitalize">{informeSeleccionado.estado_equipo.replace('_', ' ')}</p>
+              </div>
+            )}
+
+            {/* Recomendaciones */}
+            {informeSeleccionado.recomendaciones && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Recomendaciones</h3>
+                <p className="text-gray-600 bg-gray-50 p-3 rounded">{informeSeleccionado.recomendaciones}</p>
+              </div>
+            )}
+
+            {/* Próximo mantenimiento */}
+            {informeSeleccionado.proximo_mantenimiento && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Próximo Mantenimiento</h3>
+                <p className="text-gray-600 bg-gray-50 p-3 rounded">
+                  {new Date(informeSeleccionado.proximo_mantenimiento).toLocaleDateString()}
+                </p>
+              </div>
+            )}
+
+            {/* Fotos con descripciones */}
+            {(() => {
+              const bloques = parseBloques(informeSeleccionado.fotos);
+              console.log('Render: fotos =', typeof informeSeleccionado.fotos, 'bloques:', bloques.length);
+              return bloques.length > 0;
+            })() && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Fotos y Descripciones</h3>
+                <div className="space-y-4">
+                  {parseBloques(informeSeleccionado.fotos).map((bloque: any, index: number) => (
+                    <div key={index} className="border rounded-lg p-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <img 
+                            src={bloque.foto} 
+                            alt={`Foto ${index + 1}`} 
+                            className="w-full h-40 object-cover rounded"
+                          />
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500 mb-1">Descripción:</p>
+                          <p className="text-gray-700">{bloque.descripcion || 'Sin descripción'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Nombre y Cédula del cliente */}
+            {(informeSeleccionado.nombre_cliente || informeSeleccionado.cedula_cliente) && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Información del Cliente</h3>
+                <div className="bg-gray-50 p-3 rounded">
+                  <p className="text-gray-700"><span className="font-medium">Nombre:</span> {informeSeleccionado.nombre_cliente || '-'}</p>
+                  <p className="text-gray-700"><span className="font-medium">Cédula:</span> {informeSeleccionado.cedula_cliente || '-'}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Firma del cliente */}
+            {informeSeleccionado.firma_cliente && (
+              <div className="mb-4">
+                <h3 className="font-semibold text-gray-700 mb-2">Firma del Cliente</h3>
+                <img 
+                  src={informeSeleccionado.firma_cliente} 
+                  alt="Firma del cliente" 
+                  className="h-24 border rounded bg-white"
+                />
+              </div>
+            )}
+
+            <div className="flex gap-4 justify-end">
+              {/* Botones de acción según estado */}
+              {informeSeleccionado.estado === 'pendiente' && (
+                <>
+                  <button
+                    onClick={() => cambiarEstado(informeSeleccionado.id, 'enviado')}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                  >
+                    <Send size={18} />
+                    Enviar
+                  </button>
+                  <button
+                    onClick={() => cambiarEstado(informeSeleccionado.id, 'rechazado')}
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                  >
+                    <XCircle size={18} />
+                    Rechazar
+                  </button>
+                </>
+              )}
+              {informeSeleccionado.estado === 'enviado' && (
+                <>
+                  <button
+                    onClick={() => cambiarEstado(informeSeleccionado.id, 'aprobado')}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+                  >
+                    <CheckCircle size={18} />
+                    Aprobar
+                  </button>
+                  <button
+                    onClick={() => cambiarEstado(informeSeleccionado.id, 'rechazado')}
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                  >
+                    <XCircle size={18} />
+                    Rechazar
+                  </button>
+                </>
+              )}
+              {informeSeleccionado.estado === 'rechazado' && (
+                <button
+                  onClick={() => cambiarEstado(informeSeleccionado.id, 'pendiente')}
+                  className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 flex items-center gap-2"
+                >
+                  <Send size={18} />
+                  Reenviar
+                </button>
+              )}
+              <button
+                onClick={() => descargarWord(informeSeleccionado)}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+              >
+                <Download size={18} />
+                Descargar Word
+              </button>
+              <button
+                onClick={() => { setShowDetalleModal(false); setInformeSeleccionado(null); }}
+                className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Editar Informe */}
+      {showEditarModal && editandoInforme && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold mb-4">Editar Informe Técnico</h2>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Descripción del Trabajo</label>
+                <textarea
+                  value={editandoInforme.descripcion_trabajo || ''}
+                  onChange={(e) => setEditandoInforme({ ...editandoInforme, descripcion_trabajo: e.target.value })}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                  rows={3}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Materiales Usados</label>
+                <textarea
+                  value={editandoInforme.materiales_usados || ''}
+                  onChange={(e) => setEditandoInforme({ ...editandoInforme, materiales_usados: e.target.value })}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                  rows={2}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Estado del Equipo</label>
+                <select
+                  value={editandoInforme.estado_equipo || ''}
+                  onChange={(e) => setEditandoInforme({ ...editandoInforme, estado_equipo: e.target.value })}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                >
+                  <option value="">Seleccionar estado</option>
+                  <option value="nuevo">Nuevo</option>
+                  <option value="usado">Usado</option>
+                  <option value="reparado">Reparado</option>
+                  <option value="fuera_servicio">Fuera de Servicio</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Recomendaciones</label>
+                <textarea
+                  value={editandoInforme.recomendaciones || ''}
+                  onChange={(e) => setEditandoInforme({ ...editandoInforme, recomendaciones: e.target.value })}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                  rows={2}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Próximo Mantenimiento</label>
+                <input
+                  type="date"
+                  value={editandoInforme.proximo_mantenimiento ? editandoInforme.proximo_mantenimiento.toString().split('T')[0] : ''}
+                  onChange={(e) => setEditandoInforme({ ...editandoInforme, proximo_mantenimiento: e.target.value ? new Date(e.target.value) as any : undefined })}
+                  className="w-full border rounded-lg px-3 py-2 mt-1"
+                />
+              </div>
+
+              {/* Sección de Fotos */}
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Fotos ({editandoFotos.length})</label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-60 overflow-y-auto">
+                  {editandoFotos.map((foto, index) => (
+                    <div key={index} className="border rounded-lg p-2 relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nuevasFotos = editandoFotos.filter((_, i) => i !== index);
+                          setEditandoFotos(nuevasFotos);
+                        }}
+                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm hover:bg-red-600 z-10"
+                      >
+                        ×
+                      </button>
+                      <img 
+                        src={foto.foto} 
+                        alt={`Foto ${index + 1}`}
+                        className="w-full h-32 object-cover rounded mb-2"
+                      />
+                      <input
+                        type="text"
+                        value={foto.descripcion}
+                        onChange={(e) => {
+                          const nuevasFotos = [...editandoFotos];
+                          nuevasFotos[index] = { ...nuevasFotos[index], descripcion: e.target.value };
+                          setEditandoFotos(nuevasFotos);
+                        }}
+                        placeholder="Descripción de la foto..."
+                        className="w-full border rounded px-2 py-1 text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+                
+                {/* Botón para agregar nueva foto */}
+                <div className="mt-2">
+                  <label className="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 cursor-pointer text-sm">
+                    <span>+ Agregar Foto</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const base64 = reader.result as string;
+                          setEditandoFotos([...editandoFotos, { foto: base64, descripcion: '' }]);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-sm text-yellow-600 mt-4 bg-yellow-50 p-2 rounded">
+              ⚠️ Al guardar, el informe volverá al estado "pendiente" para poder ser reenviado.
+            </p>
+
+            <div className="flex gap-4 justify-end mt-6">
+              <button
+                onClick={() => { setShowEditarModal(false); setEditandoInforme(null); setEditandoFotos([]); }}
+                className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleGuardarEdicion}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Guardar Cambios
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Informes;
