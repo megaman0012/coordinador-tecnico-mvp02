@@ -653,7 +653,7 @@ const Ordenes: React.FC = () => {
                   <FileText className="w-5 h-5" />
                   Informes Técnica
                 </h3>
-                {informesRelacionados.length === 0 ? (
+                {!Array.isArray(informesRelacionados) || informesRelacionados.length === 0 ? (
                   <p className="text-gray-500 text-sm">No hay informes técnicos para esta orden</p>
                 ) : (
                   <div className="space-y-2">

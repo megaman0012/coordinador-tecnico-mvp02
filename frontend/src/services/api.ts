@@ -40,7 +40,9 @@ api.interceptors.response.use(
     
     // Para endpoints con paginación, NO transformar
     const url = response.config.url || '';
-    if (url.includes('/informes')) {
+    // Solo evitar transformación para el endpoint de informes paginado (colección)
+    // Los endpoints como /ordenes/{id}/informes NO están paginados y deben transformarse
+    if (url === '/informes' || url.startsWith('/informes?')) {
       return response;
     }
     
