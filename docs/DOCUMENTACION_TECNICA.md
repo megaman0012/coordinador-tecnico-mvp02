@@ -428,3 +428,43 @@ JWT_SECRET=your_jwt_secret
 
 #### Mejoras
 - ✅ Workflow de facturación v3.1: no_iniciada → validacion_cliente → aprobada_cliente → finalizada → pagada
+
+---
+
+## 14. Backups
+
+### 14.1 Backup de Código Fuente (19/08/2026)
+**Ubicación:** `/home/server-dt/coordinador-tecnico-mvp/backup_20260819_171916/`
+
+| Contenido | Tamaño | Notas |
+|-----------|--------|-------|
+| `backend/` | 20 MB | Sin node_modules ni dev.db |
+| `frontend/` | 1.6 MB | Sin node_modules ni build |
+| `coordinador-backend.service` | - | Configuración systemd backend |
+| `coordinador-frontend.service` | - | Configuración systemd frontend |
+| `package.json` + `package-lock.json` | - | Dependencias raíz |
+| `.gitignore` | - | Archivos ignorados por git |
+
+### 14.2 Backup de Base de Datos (19/08/2026)
+**Archivo:** `/home/server-dt/coordinador-tecnico-mvp/backup_20260819_171916/coordinator_db.dump`
+
+| Propiedad | Valor |
+|-----------|-------|
+| Tamaño | 199 MB |
+| Formato | PostgreSQL Custom (Fc) |
+| Base de datos | coordinator_db |
+| Usuario | coordinator_user |
+| Comando restauración | `pg_restore -U coordinator_user -d coordinator_db coordinator_db.dump` |
+
+### 14.3 Procedimiento de Backup
+```bash
+# 1. Backup de código fuente (excluir node_modules y build)
+rsync -av --exclude='node_modules' --exclude='build' --exclude='*.db' \
+  /home/server-dt/coordinador-tecnico-mvp/ \
+  /home/server-dt/coordinador-tecnico-mvp/backup_<timestamp>/
+
+# 2. Backup de base de datos PostgreSQL
+cd /home/server-dt/coordinador-tecnico-mvp/backend
+pg_dump -U coordinator_user -d coordinator_db -Fc > \
+  /home/server-dt/coordinador-tecnico-mvp/backup_<timestamp>/coordinator_db.dump
+```
